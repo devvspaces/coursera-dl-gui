@@ -10,7 +10,9 @@ import {
   UserPlus,
   Download,
   RefreshCw,
+  MonitorPlay,
 } from "lucide-react";
+import { BookmarkButton } from "@/components/BookmarkButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +27,8 @@ import { CachedImage } from "@/components/CachedImage";
 interface SpecializationEnrollmentViewProps {
   specDetails: SpecializationDetails;
   prefixSep: string;
+  /** "Specialization" or "Professional Certificate" (from the pasted URL). */
+  label?: string;
   onBack: () => void;
   onRefresh: () => Promise<void>;
 }
@@ -32,9 +36,11 @@ interface SpecializationEnrollmentViewProps {
 export function SpecializationEnrollmentView({
   specDetails,
   prefixSep,
+  label = "Specialization",
   onBack,
   onRefresh,
 }: SpecializationEnrollmentViewProps) {
+  const openCoursePreview = useAppStore((s) => s.openCoursePreview);
   const [enrollingCourseId, setEnrollingCourseId] = useState<string | null>(null);
   const [isEnrollingAll, setIsEnrollingAll] = useState(false);
   const [isPreparingDownload, setIsPreparingDownload] = useState(false);
@@ -119,6 +125,17 @@ export function SpecializationEnrollmentView({
         </Button>
 
         <div className="flex items-center gap-2">
+          <BookmarkButton
+            bookmark={{
+              kind: "spec",
+              label,
+              slug: specDetails.slug,
+              name: specDetails.name,
+              photo_url: specDetails.photo_url || specDetails.logo,
+              partner_name: specDetails.partner_name,
+              course_count: specDetails.total_courses,
+            }}
+          />
           <Button
             variant="outline"
             size="sm"
@@ -150,7 +167,7 @@ export function SpecializationEnrollmentView({
               <div className="flex items-center gap-2">
                 <Badge className="bg-[#0056D2] text-white border-0 text-[11px] gap-1 px-2 py-0.5 rounded-[4px] font-semibold">
                   <Layers className="h-3 w-3" />
-                  Specialization
+                  {label}
                 </Badge>
                 {specDetails.partner_name && (
                   <span className="text-xs font-semibold text-white/90 uppercase tracking-wider bg-black/60 px-2 py-0.5 rounded-[4px] backdrop-blur-xs">
@@ -184,7 +201,7 @@ export function SpecializationEnrollmentView({
           {/* Enrollment Progress Bar */}
           <div className="space-y-2 pt-1">
             <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-[#1F1F1F] dark:text-white">Specialization Enrollment Status</span>
+              <span className="font-semibold text-[#1F1F1F] dark:text-white">{label} Enrollment Status</span>
               <span className="font-mono font-bold text-[#0056D2] dark:text-[#2E7BFA]">{enrolledPercent.toFixed(0)}%</span>
             </div>
             <Progress value={enrolledPercent} className="h-2 bg-[#EBEEF2] dark:bg-white/10 [&>div]:bg-[#0056D2] dark:[&>div]:bg-[#2E7BFA]" />
@@ -241,7 +258,7 @@ export function SpecializationEnrollmentView({
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-bold uppercase tracking-wider text-[#5F5F5F] dark:text-[#98A2B3]">
-            Courses in this Specialization ({specDetails.courses.length})
+            Courses in this {label} ({specDetails.courses.length})
           </h3>
           {unenrolledCourses.length > 0 && (
             <Button
@@ -291,7 +308,28 @@ export function SpecializationEnrollmentView({
                 </div>
               </div>
 
-              <div className="flex items-center gap-2.5 shrink-0 self-end sm:self-center">
+              <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => openCoursePreview(course.slug, course.name)}
+                  className="h-8 px-3 text-xs gap-1.5 rounded-[4px] font-semibold border-[#0056D2]/40 text-[#0056D2] dark:text-[#93B8FF] hover:bg-[#E8F0FE] dark:hover:bg-[#1E223D] cursor-pointer"
+                  title="Browse modules, watch videos and read before downloading"
+                >
+                  <MonitorPlay className="h-3.5 w-3.5" />
+                  Preview
+                </Button>
+                <BookmarkButton
+                  variant="icon"
+                  bookmark={{
+                    kind: "course",
+                    label: "Course",
+                    slug: course.slug,
+                    name: course.name,
+                    photo_url: course.photo_url,
+                    partner_name: specDetails.partner_name,
+                  }}
+                />
                 {course.is_enrolled ? (
                   <Badge
                     variant="outline"
@@ -346,13 +384,13 @@ export function SpecializationEnrollmentView({
           {isPreparingDownload ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin" />
-              Crawling Specialization & Preparing Files...
+              Crawling {label} &amp; Preparing Files...
             </>
           ) : (
             <>
               <Download className="h-4 w-4" />
               {specDetails.all_enrolled
-                ? "Download Complete Specialization"
+                ? `Download Complete ${label}`
                 : `Download Enrolled Courses (${specDetails.enrolled_courses}/${specDetails.total_courses})`}
             </>
           )}

@@ -12,7 +12,9 @@ import {
   FolderOpen,
   Play,
   Clock,
+  MonitorPlay,
 } from "lucide-react";
+import { BookmarkButton } from "@/components/BookmarkButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -399,24 +401,50 @@ export function CoursesView() {
 
                 <CardContent className="p-4 pt-0 mt-auto">
                   <div className="pt-3 border-t border-[#D9D9D9]/70 dark:border-white/10 flex items-center justify-between gap-2">
-                    <span className="text-[12px] font-medium text-[#5F5F5F] dark:text-[#98A2B3]">
-                      {isCompleted
-                        ? "Saved locally"
-                        : hasPartial
-                        ? "Resume ready"
-                        : "Available to download"}
-                    </span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <BookmarkButton
+                        variant="icon"
+                        bookmark={{
+                          kind: "course",
+                          label: "Course",
+                          slug: course.slug,
+                          name: course.name,
+                          photo_url: course.photo_url,
+                          partner_name: course.partner_name,
+                        }}
+                      />
+                      <span className="text-[12px] font-medium text-[#5F5F5F] dark:text-[#98A2B3] truncate">
+                        {isCompleted ? "Saved locally" : hasPartial ? "Partly saved" : "Not downloaded"}
+                      </span>
+                    </div>
 
                     {isCompleted ? (
                       <div className="flex items-center gap-1.5">
+                        {downloadInfo?.path && (
+                          <Button
+                            size="sm"
+                            onClick={() =>
+                              useAppStore.getState().openCoursePlayer({
+                                path: downloadInfo.path,
+                                slug: course.slug,
+                                title: course.name,
+                              })
+                            }
+                            className="gap-1.5 h-8 px-3 text-xs font-semibold rounded-[4px] bg-[#0056D2] hover:bg-[#00419e] text-white cursor-pointer shadow-xs"
+                            title="Watch and read this course inside the app"
+                          >
+                            <MonitorPlay className="h-3.5 w-3.5" />
+                            Open Course
+                          </Button>
+                        )}
                         <Button
                           size="sm"
                           variant="outline"
                           onClick={() => handleOpenFolder(downloadInfo?.path)}
+                          title="Open folder in Finder"
                           className="gap-1.5 h-8 px-2.5 text-xs font-semibold rounded-[4px] border-[#D9D9D9] dark:border-white/15 text-[#1F1F1F] dark:text-white hover:bg-[#F5F7FA] dark:hover:bg-white/5 cursor-pointer"
                         >
                           <FolderOpen className="h-3.5 w-3.5 text-[#0056D2] dark:text-[#2E7BFA]" />
-                          Open Folder
                         </Button>
                         <Button
                           size="sm"
@@ -434,6 +462,8 @@ export function CoursesView() {
                         </Button>
                       </div>
                     ) : hasPartial ? (
+                      <div className="flex items-center gap-1.5">
+                      <PreviewButton slug={course.slug} name={course.name} />
                       <Button
                         size="sm"
                         onClick={() => handleDownloadCourse(course)}
@@ -448,11 +478,14 @@ export function CoursesView() {
                         ) : (
                           <>
                             <Play className="h-3 w-3 fill-current" />
-                            Resume Download
+                            Resume
                           </>
                         )}
                       </Button>
+                      </div>
                     ) : (
+                      <div className="flex items-center gap-1.5">
+                      <PreviewButton slug={course.slug} name={course.name} />
                       <Button
                         size="sm"
                         onClick={() => handleDownloadCourse(course)}
@@ -471,6 +504,7 @@ export function CoursesView() {
                           </>
                         )}
                       </Button>
+                      </div>
                     )}
                   </div>
                 </CardContent>
@@ -484,3 +518,19 @@ export function CoursesView() {
 }
 
 
+
+function PreviewButton({ slug, name }: { slug: string; name: string }) {
+  const openCoursePreview = useAppStore((s) => s.openCoursePreview);
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={() => openCoursePreview(slug, name)}
+      title="Browse modules, watch videos and read before downloading"
+      className="gap-1.5 h-8 px-2.5 text-xs font-semibold rounded-[4px] border-[#0056D2]/40 text-[#0056D2] dark:text-[#93B8FF] hover:bg-[#E8F0FE] dark:hover:bg-[#1E223D] cursor-pointer"
+    >
+      <MonitorPlay className="h-3.5 w-3.5" />
+      Preview
+    </Button>
+  );
+}

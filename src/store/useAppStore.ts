@@ -110,6 +110,44 @@ export interface DownloadedItem {
 
 export type VideoResolution = 360 | 540 | 720 | 1080;
 
+export type AppView = "courses" | "custom_download" | "downloads" | "saved" | "settings" | "player";
+
+export interface PlayerCourseRef {
+  /** "local": open a downloaded folder. "preview": fetch live from Coursera (local files used when present). */
+  mode?: "local" | "preview";
+  /** Absolute path of the course folder (local mode). */
+  path?: string;
+  /** Coursera slug (required for preview; used to rebuild metadata locally). */
+  slug?: string;
+  title?: string;
+}
+
+export interface Bookmark {
+  kind: "course" | "spec";
+  /** Display label, e.g. "Course", "Specialization", "Professional Certificate". */
+  label: string;
+  slug: string;
+  name: string;
+  photo_url?: string | null;
+  partner_name?: string | null;
+  course_count?: number;
+  savedAt: number;
+}
+
+export interface BrowsingSpec {
+  details: SpecializationDetails;
+  label: string;
+}
+
+export interface PlayerPrefs {
+  playbackRate: number;
+  captionsEnabled: boolean;
+  autoplayNext: boolean;
+  transcriptAutoScroll: boolean;
+  ttsVoiceURI: string | null;
+  ttsRate: number;
+}
+
 interface AppState {
   user: UserProfile | null;
   enrolledCourses: EnrolledCourse[];
@@ -122,7 +160,12 @@ interface AppState {
   maxDelaySeconds: number;
   delayVideosOnly: boolean;
   isDownloading: boolean;
-  activeView: "courses" | "custom_download" | "downloads" | "settings";
+  activeView: AppView;
+  playerCourse: PlayerCourseRef | null;
+  playerReturnView: AppView;
+  playerPrefs: PlayerPrefs;
+  bookmarks: Bookmark[];
+  browsingSpec: BrowsingSpec | null;
   currentProgress: DownloadProgressEvent | null;
   liveTasks: Record<string, DownloadTask>;
 
@@ -144,7 +187,14 @@ interface AppState {
   setMaxDelaySeconds: (secs: number) => void;
   setDelayVideosOnly: (videosOnly: boolean) => void;
   setIsDownloading: (isDl: boolean) => void;
-  setActiveView: (view: "courses" | "custom_download" | "downloads" | "settings") => void;
+  setActiveView: (view: AppView) => void;
+  openCoursePlayer: (course: PlayerCourseRef) => void;
+  openCoursePreview: (slug: string, title?: string) => void;
+  closeCoursePlayer: () => void;
+  toggleBookmark: (b: Omit<Bookmark, "savedAt">) => void;
+  removeBookmark: (kind: Bookmark["kind"], slug: string) => void;
+  setBrowsingSpec: (spec: BrowsingSpec | null) => void;
+  setPlayerPrefs: (prefs: Partial<PlayerPrefs>) => void;
   updateProgress: (event: DownloadProgressEvent) => void;
   resetDownloads: () => void;
   clearAllUserData: () => void;
@@ -168,6 +218,18 @@ export const useAppStore = create<AppState>()(
       delayVideosOnly: false,
       isDownloading: false,
       activeView: "courses",
+      playerCourse: null,
+      playerReturnView: "downloads",
+      bookmarks: [],
+      browsingSpec: null,
+      playerPrefs: {
+        playbackRate: 1,
+        captionsEnabled: true,
+        autoplayNext: true,
+        transcriptAutoScroll: true,
+        ttsVoiceURI: null,
+        ttsRate: 1,
+      },
       currentProgress: null,
       liveTasks: {},
 
@@ -235,6 +297,32 @@ export const useAppStore = create<AppState>()(
       setDelayVideosOnly: (delayVideosOnly) => set({ delayVideosOnly }),
       setIsDownloading: (isDownloading) => set({ isDownloading }),
       setActiveView: (activeView) => set({ activeView }),
+      openCoursePlayer: (playerCourse) =>
+        set((state) => ({
+          playerCourse: { mode: "local", ...playerCourse },
+          activeView: "player",
+          playerReturnView: state.activeView === "player" ? state.playerReturnView : state.activeView,
+        })),
+      openCoursePreview: (slug, title) =>
+        set((state) => ({
+          playerCourse: { mode: "preview", slug, title },
+          activeView: "player",
+          playerReturnView: state.activeView === "player" ? state.playerReturnView : state.activeView,
+        })),
+      closeCoursePlayer: () => set((state) => ({ activeView: state.playerReturnView || "downloads" })),
+      toggleBookmark: (b) =>
+        set((state) => {
+          const exists = state.bookmarks.some((x) => x.kind === b.kind && x.slug === b.slug);
+          return {
+            bookmarks: exists
+              ? state.bookmarks.filter((x) => !(x.kind === b.kind && x.slug === b.slug))
+              : [{ ...b, savedAt: Date.now() }, ...state.bookmarks],
+          };
+        }),
+      removeBookmark: (kind, slug) =>
+        set((state) => ({ bookmarks: state.bookmarks.filter((x) => !(x.kind === kind && x.slug === slug)) })),
+      setBrowsingSpec: (browsingSpec) => set({ browsingSpec }),
+      setPlayerPrefs: (prefs) => set((state) => ({ playerPrefs: { ...state.playerPrefs, ...prefs } })),
       updateProgress: (event) =>
         set((state) => {
           if (event.task_id === "all") {
@@ -299,6 +387,9 @@ export const useAppStore = create<AppState>()(
         coursesCache: state.coursesCache,
         lastCoursesFetchedAt: state.lastCoursesFetchedAt,
         downloadStatusMap: state.downloadStatusMap,
+        playerCourse: state.playerCourse,
+        playerPrefs: state.playerPrefs,
+        bookmarks: state.bookmarks,
       }),
     }
   )

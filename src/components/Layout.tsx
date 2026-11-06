@@ -9,6 +9,7 @@ import {
   Moon,
   Monitor,
   Sparkles,
+  Bookmark,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/components/ThemeProvider";
@@ -18,6 +19,8 @@ import { CoursesView } from "@/components/CoursesView";
 import { CustomDownloadView } from "@/components/CustomDownloadView";
 import { DownloadsView } from "@/components/DownloadsView";
 import { SettingsView } from "@/components/SettingsView";
+import { CoursePlayer } from "@/components/player/CoursePlayer";
+import { SavedView } from "@/components/SavedView";
 
 export function Layout() {
   const activeView = useAppStore((s) => s.activeView);
@@ -27,6 +30,7 @@ export function Layout() {
   const isDownloading = useAppStore((s) => s.isDownloading);
   const setIsDownloading = useAppStore((s) => s.setIsDownloading);
   const updateProgress = useAppStore((s) => s.updateProgress);
+  const savedCount = useAppStore((s) => s.bookmarks.length);
   const { theme, setTheme } = useTheme();
 
   // Global persistent event listener for download progress
@@ -62,8 +66,14 @@ export function Layout() {
     },
     {
       id: "custom_download" as const,
-      label: "Course Slug DL",
+      label: "Browse by Link",
       icon: Download,
+    },
+    {
+      id: "saved" as const,
+      label: "Saved",
+      icon: Bookmark,
+      badge: savedCount > 0 ? String(savedCount) : undefined,
     },
     {
       id: "downloads" as const,
@@ -77,6 +87,10 @@ export function Layout() {
       icon: SettingsIcon,
     },
   ];
+
+  if (activeView === "player") {
+    return <CoursePlayer />;
+  }
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground select-none">
@@ -202,6 +216,7 @@ export function Layout() {
           {activeView === "courses" && <CoursesView />}
           {activeView === "custom_download" && <CustomDownloadView />}
           {activeView === "downloads" && <DownloadsView />}
+          {activeView === "saved" && <SavedView />}
           {activeView === "settings" && <SettingsView />}
         </div>
       </main>

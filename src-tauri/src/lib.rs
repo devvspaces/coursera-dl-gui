@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod client;
 pub mod downloader;
+pub mod library;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -270,6 +271,11 @@ async fn prepare_course_download(
         out_guard.clone().unwrap_or_else(|| resolve_path("~/Downloads/Coursera"))
     };
     downloader::check_existing_files(&mut manifest, &out_dir).await;
+    for outline in &manifest.outlines {
+        if let Err(e) = library::write_outline(outline, &out_dir.join(&outline.root_folder)) {
+            println!("[Library] Failed to write course.json for {}: {}", outline.slug, e);
+        }
+    }
 
     let mut m_guard = state.active_manifest.lock().await;
     *m_guard = Some(manifest.clone());
@@ -310,12 +316,194 @@ async fn get_all_downloaded_items(
     Ok(downloader::get_all_downloaded_items(&out_dir, client.as_ref()).await)
 }
 
+async fn current_output_dir(state: &State<'_, AppState>) -> PathBuf {
+    let guard = state.output_dir.lock().await;
+    guard.clone().unwrap_or_else(|| resolve_path("~/Downloads/Coursera"))
+}
+
+/// Let the webview stream files (video, images, PDFs) from this directory via the asset protocol.
+fn allow_asset_dir(app: &AppHandle, dir: &std::path::Path) {
+    use tauri::Manager;
+    if let Err(e) = app.asset_protocol_scope().allow_directory(dir, true) {
+        println!("[Library] Could not allow asset access to {:?}: {}", dir, e);
+    }
+}
+
 #[tauri::command]
-async fn set_output_directory(path: String, state: State<'_, AppState>) -> Result<String, String> {
+async fn get_course_outline(path: String, app: AppHandle) -> Result<library::CourseOutline, String> {
+    let dir = resolve_path(&path);
+    if !dir.is_dir() {
+        return Err(format!("Course folder not found: {}", dir.display()));
+    }
+    allow_asset_dir(&app, &dir);
+    let outline = tokio::task::spawn_blocking(move || library::load_outline(&dir))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(outline)
+}
+
+/// Re-fetch the course structure for an already-downloaded course folder and write `course.json`.
+/// Also prepares a download manifest so any missing files (e.g. reading images) can be fetched.
+#[tauri::command]
+async fn rebuild_course_metadata(
+    path: String,
+    slug: Option<String>,
+    max_resolution: Option<u32>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<RebuildResult, String> {
+    let client = {
+        let guard = state.client.lock().await;
+        guard.clone().ok_or_else(|| "Not logged in".to_string())?
+    };
+    let course_dir = resolve_path(&path);
+    let base_dir = course_dir.parent().ok_or("Invalid course folder")?.to_path_buf();
+    let root_folder = course_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or("Invalid course folder")?;
+    let slug = slug.filter(|s| !s.is_empty()).unwrap_or_else(|| library::infer_slug(&course_dir));
+
+    // Detect the separator the folder was downloaded with (default " - ")
+    let probe = library::fetch_outline(&client, &slug, " - ").await?;
+    let sep = library::detect_prefix_sep(&course_dir, &probe).unwrap_or_else(|| " - ".to_string());
+
+    let mut tasks = Vec::new();
+    let outline = downloader::gather_course_items(&client, &slug, &root_folder, &sep, max_resolution, &mut tasks).await?;
+    library::write_outline(&outline, &course_dir)?;
+
+    let mut manifest = CourseManifest {
+        course_name: root_folder,
+        slug: slug.clone(),
+        is_spec: false,
+        photo_url: outline.photo_url.clone(),
+        total_files: tasks.len(),
+        tasks,
+        total_size_est: 0,
+        outlines: vec![],
+        base_dir: Some(base_dir.clone()),
+    };
+    downloader::check_existing_files(&mut manifest, &base_dir).await;
+    *state.active_manifest.lock().await = Some(manifest.clone());
+
+    allow_asset_dir(&app, &course_dir);
+    Ok(RebuildResult { outline: library::load_outline(&course_dir), manifest })
+}
+
+#[derive(serde::Serialize)]
+struct RebuildResult {
+    outline: library::CourseOutline,
+    manifest: CourseManifest,
+}
+
+async fn require_client(state: &State<'_, AppState>) -> Result<CourseraClient, String> {
+    let guard = state.client.lock().await;
+    guard.clone().ok_or_else(|| "Not logged in".to_string())
+}
+
+/// Fetch a course's outline live from Coursera so it can be browsed before (or while) downloading.
+/// Items already on disk are marked `available` and play locally; the rest stream online.
+#[tauri::command]
+async fn get_course_preview(
+    slug: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<library::CourseOutline, String> {
+    let client = require_client(&state).await?;
+    let out_dir = current_output_dir(&state).await;
+
+    let local = {
+        let slug = slug.clone();
+        let out_dir = out_dir.clone();
+        tokio::task::spawn_blocking(move || downloader::get_course_download_status_on_disk(&slug, &out_dir))
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    let local_dir = std::path::PathBuf::from(&local.path);
+    let has_local = local.downloaded_files > 0 && local_dir.is_dir();
+
+    let mut outline = library::fetch_outline(&client, &slug, " - ").await?;
+    if has_local {
+        if let Some(sep) = library::detect_prefix_sep(&local_dir, &outline) {
+            if sep != " - " {
+                outline = library::fetch_outline(&client, &slug, &sep).await?;
+            }
+        }
+        library::annotate_local(&mut outline, &local_dir);
+        allow_asset_dir(&app, &local_dir);
+    } else {
+        library::clear_local(&mut outline);
+    }
+    outline.preview = true;
+    Ok(outline)
+}
+
+#[tauri::command]
+async fn get_lecture_stream(
+    course_id: String,
+    item_id: String,
+    max_resolution: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<library::LectureStream, String> {
+    let client = require_client(&state).await?;
+    library::lecture_stream(&client, &course_id, &item_id, max_resolution).await
+}
+
+#[tauri::command]
+async fn get_remote_reading(
+    course_id: String,
+    item_id: String,
+    state: State<'_, AppState>,
+) -> Result<library::RemoteReading, String> {
+    let client = require_client(&state).await?;
+    library::remote_reading(&client, &course_id, &item_id).await
+}
+
+#[tauri::command]
+async fn read_course_file(path: String, state: State<'_, AppState>) -> Result<String, String> {
+    let out_dir = current_output_dir(&state).await;
+    let target = resolve_path(&path);
+    tokio::task::spawn_blocking(move || library::read_text_within(&target, &out_dir))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn get_course_progress(course_key: String) -> Result<serde_json::Value, String> {
+    Ok(library::read_progress(&course_key))
+}
+
+#[tauri::command]
+async fn save_course_progress(course_key: String, progress: serde_json::Value) -> Result<(), String> {
+    library::write_progress(&course_key, &progress)
+}
+
+#[tauri::command]
+async fn set_output_directory(path: String, app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     let resolved = resolve_path(&path);
+    allow_asset_dir(&app, &resolved);
     let mut out = state.output_dir.lock().await;
     *out = Some(resolved.clone());
     Ok(resolved.to_string_lossy().to_string())
+}
+
+/// Open a downloaded course file (PDF, notebook, ...) with the system's default app.
+#[tauri::command]
+async fn open_course_file(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let out_dir = current_output_dir(&state).await;
+    let target = resolve_path(&path).canonicalize().map_err(|e| e.to_string())?;
+    let root = out_dir.canonicalize().map_err(|e| e.to_string())?;
+    if !target.starts_with(&root) || !target.is_file() {
+        return Err("Only files inside the download folder can be opened".into());
+    }
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(target_os = "windows")]
+    let cmd = "explorer";
+    #[cfg(target_os = "linux")]
+    let cmd = "xdg-open";
+    std::process::Command::new(cmd).arg(&target).spawn().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -377,9 +565,12 @@ async fn start_download(
     };
     let client = client_opt.ok_or_else(|| "Not authenticated".to_string())?;
 
-    let out_dir = {
-        let guard = state.output_dir.lock().await;
-        guard.clone().unwrap_or_else(|| resolve_path("~/Downloads/Coursera"))
+    let out_dir = match manifest.base_dir.clone() {
+        Some(dir) => dir,
+        None => {
+            let guard = state.output_dir.lock().await;
+            guard.clone().unwrap_or_else(|| resolve_path("~/Downloads/Coursera"))
+        }
     };
 
     let is_dl_flag = state.is_downloading.clone();
@@ -519,7 +710,16 @@ pub fn run() {
             prepare_course_download,
             set_output_directory,
             open_download_folder,
-            start_download
+            start_download,
+            get_course_outline,
+            get_course_preview,
+            get_lecture_stream,
+            get_remote_reading,
+            open_course_file,
+            rebuild_course_metadata,
+            read_course_file,
+            get_course_progress,
+            save_course_progress
         ])
         .run(tauri::generate_context!())
         .expect("error while running coursera dl application");

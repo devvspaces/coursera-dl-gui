@@ -21,7 +21,14 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$HOME/Downloads/**",
+          "$HOME/Downloads/Coursera/**"
+        ]
+      }
     }
   },
   "bundle": {

@@ -6,6 +6,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use crate::client::{CourseraClient, COURSERA_BASE};
+use crate::library::CourseOutline;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadTask {
@@ -38,6 +39,12 @@ pub struct CourseManifest {
     pub tasks: Vec<DownloadTask>,
     pub total_files: usize,
     pub total_size_est: u64,
+    /// Structured outlines for every course in this manifest (written as `course.json`).
+    #[serde(skip)]
+    pub outlines: Vec<CourseOutline>,
+    /// Base directory the task paths are relative to (defaults to the output directory).
+    #[serde(skip)]
+    pub base_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +111,7 @@ pub async fn build_course_manifest(
     max_resolution: Option<u32>,
 ) -> Result<CourseManifest, String> {
     let mut tasks = Vec::new();
+    let mut outlines = Vec::new();
     let course_name = sanitize_name(slug);
     let mut photo_url: Option<String> = None;
 
@@ -148,7 +156,7 @@ pub async fn build_course_manifest(
                     if !c_slug.is_empty() {
                         let course_prefix = format!("{:02}{}{}", c_idx + 1, prefix_sep, sanitize_name(c_slug));
                         let spec_course_root = format!("{}/{}", course_name, course_prefix);
-                        gather_course_items(client, c_slug, &spec_course_root, prefix_sep, max_resolution, &mut tasks).await?;
+                        outlines.push(gather_course_items(client, c_slug, &spec_course_root, prefix_sep, max_resolution, &mut tasks).await?);
                     }
                 }
             }
@@ -167,7 +175,7 @@ pub async fn build_course_manifest(
             }
         }
 
-        gather_course_items(client, slug, &course_name, prefix_sep, max_resolution, &mut tasks).await?;
+        outlines.push(gather_course_items(client, slug, &course_name, prefix_sep, max_resolution, &mut tasks).await?);
     }
 
     let total_files = tasks.len();
@@ -179,6 +187,8 @@ pub async fn build_course_manifest(
         tasks,
         total_files,
         total_size_est: 0,
+        outlines,
+        base_dir: None,
     };
 
     // Also persist info in downloads_db
@@ -261,92 +271,35 @@ async fn probe_url_size(client: &reqwest::Client, url: &str) -> u64 {
     0
 }
 
-async fn gather_course_items(
+pub async fn gather_course_items(
     client: &CourseraClient,
     course_slug: &str,
     root_folder: &str,
     prefix_sep: &str,
     max_resolution: Option<u32>,
     tasks: &mut Vec<DownloadTask>,
-) -> Result<(), String> {
-    // 1. Fetch course details to get ID
-    let course_url = format!("{}/api/onDemandCourses.v1?q=slug&slug={}", COURSERA_BASE, course_slug);
-    let resp = client.client().get(&course_url).send().await.map_err(|e| e.to_string())?;
-    let course_info: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    
-    let course_id = course_info.get("elements")
-        .and_then(|e| e.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|c| c.get("id"))
-        .and_then(|id| id.as_str())
-        .ok_or_else(|| format!("Course '{}' not found or invalid", course_slug))?
-        .to_string();
-
-    // 2. Fetch course materials (modules, lessons, items)
-    let mat_url = format!(
-        "{}/api/onDemandCourseMaterials.v2/?q=slug&slug={}&includes=modules,lessons,items&fields=onDemandCourseMaterialModules.v1(name,slug,lessonIds),onDemandCourseMaterialLessons.v1(name,slug,itemIds),onDemandCourseMaterialItems.v2(name,slug,contentSummary)&showLockedItems=true",
-        COURSERA_BASE, course_slug
-    );
-    let mat_resp = client.client().get(&mat_url).send().await.map_err(|e| e.to_string())?;
-    let mat_data: serde_json::Value = mat_resp.json().await.map_err(|e| e.to_string())?;
-
-    let mut item_map = std::collections::HashMap::new();
-    if let Some(items) = mat_data.get("linked").and_then(|l| l.get("onDemandCourseMaterialItems.v2")).and_then(|i| i.as_array()) {
-        for it in items {
-            if let Some(id) = it.get("id").and_then(|id| id.as_str()) {
-                item_map.insert(id.to_string(), it.clone());
-            }
-        }
-    }
-
-    let mut lesson_map = std::collections::HashMap::new();
-    if let Some(lessons) = mat_data.get("linked").and_then(|l| l.get("onDemandCourseMaterialLessons.v1")).and_then(|les| les.as_array()) {
-        for l in lessons {
-            if let Some(id) = l.get("id").and_then(|id| id.as_str()) {
-                lesson_map.insert(id.to_string(), l.clone());
-            }
-        }
-    }
+) -> Result<CourseOutline, String> {
+    // 1 + 2. Fetch course details and the full module/lesson/item structure
+    let mut outline = crate::library::fetch_outline(client, course_slug, prefix_sep).await?;
+    outline.root_folder = root_folder.to_string();
+    let course_id = outline.course_id.clone();
 
     let mut items_to_process = Vec::new();
-
-    if let Some(modules) = mat_data.get("linked").and_then(|l| l.get("onDemandCourseMaterialModules.v1")).and_then(|m| m.as_array()) {
-        for (m_idx, m) in modules.iter().enumerate() {
-            let m_slug = m.get("slug").and_then(|s| s.as_str()).unwrap_or("module");
-            let module_folder = format!("{:02}{}{}", m_idx + 1, prefix_sep, sanitize_name(m_slug));
-
-            if let Some(lesson_ids) = m.get("lessonIds").and_then(|l| l.as_array()) {
-                for (l_idx, l_id_val) in lesson_ids.iter().enumerate() {
-                    let l_id = l_id_val.as_str().unwrap_or_default();
-                    if let Some(lesson) = lesson_map.get(l_id) {
-                        let l_slug = lesson.get("slug").and_then(|s| s.as_str()).unwrap_or("lesson");
-                        let lesson_folder = format!("{:02}{}{}", l_idx + 1, prefix_sep, sanitize_name(l_slug));
-
-                        if let Some(item_ids) = lesson.get("itemIds").and_then(|ids| ids.as_array()) {
-                            for (it_idx, it_id_val) in item_ids.iter().enumerate() {
-                                let it_id = it_id_val.as_str().unwrap_or_default();
-                                if let Some(item) = item_map.get(it_id) {
-                                    let item_slug = item.get("slug").and_then(|s| s.as_str()).unwrap_or("item");
-                                    let item_name = item.get("name").and_then(|s| s.as_str()).unwrap_or(item_slug);
-                                    let content_type = item.get("contentSummary").and_then(|c| c.get("typeName")).and_then(|t| t.as_str()).unwrap_or("");
-
-                                    if content_type == "lecture" || content_type == "supplement" {
-                                        items_to_process.push(ItemToProcess {
-                                            course_id: course_id.clone(),
-                                            root_folder: root_folder.to_string(),
-                                            module_folder: module_folder.clone(),
-                                            lesson_folder: lesson_folder.clone(),
-                                            it_idx,
-                                            it_id: it_id.to_string(),
-                                            item_slug: item_slug.to_string(),
-                                            item_name: item_name.to_string(),
-                                            content_type: content_type.to_string(),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
+    for m in &outline.modules {
+        for l in &m.lessons {
+            for it in &l.items {
+                if it.item_type == "lecture" || it.item_type == "supplement" {
+                    items_to_process.push(ItemToProcess {
+                        course_id: course_id.clone(),
+                        root_folder: root_folder.to_string(),
+                        module_folder: m.folder.clone(),
+                        lesson_folder: l.folder.clone(),
+                        it_idx: it.index,
+                        it_id: it.id.clone(),
+                        item_slug: it.slug.clone(),
+                        item_name: it.name.clone(),
+                        content_type: it.item_type.clone(),
+                    });
                 }
             }
         }
@@ -376,26 +329,9 @@ async fn gather_course_items(
                         if let Some(videos) = v_data.get("linked").and_then(|l| l.get("onDemandVideos.v1")).and_then(|v| v.as_array()) {
                             for (v_i, v_obj) in videos.iter().enumerate() {
                                 if let Some(sources) = v_obj.get("sources").and_then(|s| s.get("byResolution")).and_then(|b| b.as_object()) {
-                                    let mut res_keys: Vec<&String> = sources.keys().collect();
-                                    res_keys.sort_by(|a, b| {
-                                        let a_num: u32 = a.trim_end_matches('p').parse().unwrap_or(0);
-                                        let b_num: u32 = b.trim_end_matches('p').parse().unwrap_or(0);
-                                        a_num.cmp(&b_num)
-                                    });
-
-                                    let target_max_res = max_res_val.unwrap_or(720);
-                                    let chosen_key = res_keys
-                                        .iter()
-                                        .filter(|k| {
-                                            let num = k.trim_end_matches('p').parse::<u32>().unwrap_or(0);
-                                            num <= target_max_res
-                                        })
-                                        .last()
-                                        .copied()
-                                        .or_else(|| res_keys.first().copied());
-
-                                    if let Some(key) = chosen_key {
-                                        if let Some(mp4_url) = sources.get(key.as_str()).and_then(|res| res.get("mp4VideoUrl")).and_then(|u| u.as_str()) {
+                                    if let Some((key, mp4_url)) = pick_mp4_source(sources, max_res_val) {
+                                        {
+                                            let mp4_url = mp4_url.as_str();
                                             let file_label = format!("{:02}{}{}.mp4", item.it_idx + 1, sep, sanitize_name(&item.item_slug));
                                             let rel_path = format!("{}/{}/{}/{}", item.root_folder, item.module_folder, item.lesson_folder, file_label);
                                             let probed_size = probe_url_size(client_clone.client(), mp4_url).await;
@@ -448,6 +384,7 @@ async fn gather_course_items(
                                         let file_label = format!("{:02}{}{}.html", item.it_idx + 1, sep, sanitize_name(&item.item_slug));
                                         let rel_path = format!("{}/{}/{}/{}", item.root_folder, item.module_folder, item.lesson_folder, file_label);
                                         
+                                        sub_tasks.extend(reading_asset_tasks(client_clone.client(), html_val, &item.root_folder).await);
                                         let data_url = format!("data:text/html;charset=utf-8,{}", urlencoding::encode(html_val));
                                         sub_tasks.push(DownloadTask {
                                             id: format!("{}-supp-{}", item.it_id, a_i),
@@ -471,13 +408,109 @@ async fn gather_course_items(
         }));
     }
 
+    let mut seen: std::collections::HashSet<String> = tasks.iter().map(|t| t.id.clone()).collect();
     for f in futures {
         if let Ok(sub_tasks) = f.await {
-            tasks.extend(sub_tasks);
+            for t in sub_tasks {
+                // Shared reading assets (images, PDFs) can be referenced by several readings
+                if seen.insert(t.id.clone()) {
+                    tasks.push(t);
+                }
+            }
         }
     }
 
-    Ok(())
+    Ok(outline)
+}
+
+/// Pick the highest-resolution MP4 at or below `max_res` (default 720p) from `sources.byResolution`.
+/// Returns `(resolution_key, mp4_url)`.
+pub fn pick_mp4_source(
+    sources: &serde_json::Map<String, serde_json::Value>,
+    max_res: Option<u32>,
+) -> Option<(String, String)> {
+    let res_num = |k: &str| k.trim_end_matches('p').parse::<u32>().unwrap_or(0);
+    let mut keys: Vec<&String> = sources
+        .keys()
+        .filter(|k| sources[k.as_str()].get("mp4VideoUrl").and_then(|u| u.as_str()).is_some())
+        .collect();
+    keys.sort_by_key(|k| res_num(k));
+    let target = max_res.unwrap_or(720);
+    let key = keys
+        .iter()
+        .filter(|k| res_num(k) <= target)
+        .last()
+        .or_else(|| keys.first())
+        .copied()?;
+    let url = sources[key.as_str()].get("mp4VideoUrl")?.as_str()?.to_string();
+    Some((key.clone(), url))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReadingAsset {
+    pub id: String,
+    pub url: String,
+    pub ext: String,
+    pub name: String,
+}
+
+/// Images (`<img assetId>`) and attachments (`<asset id extension>`) embedded in a CML reading,
+/// resolved to signed download URLs through `assets.v1`.
+pub async fn resolve_reading_assets(client: &reqwest::Client, cml: &str) -> Vec<ReadingAsset> {
+    let img_re = regex::Regex::new(r#"<img[^>]*\bassetId="([^"]+)""#).unwrap();
+    let asset_re = regex::Regex::new(r#"<asset\b[^>]*\bid="([^"]+)""#).unwrap();
+    let mut ids: Vec<String> = img_re
+        .captures_iter(cml)
+        .chain(asset_re.captures_iter(cml))
+        .map(|c| c[1].to_string())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return vec![];
+    }
+
+    let url = format!("{}/api/assets.v1?ids={}&fields=fileExtension,url,name", COURSERA_BASE, ids.join(","));
+    let Ok(resp) = client.get(&url).send().await else { return vec![] };
+    let Ok(data) = resp.json::<serde_json::Value>().await else { return vec![] };
+
+    let mut out = Vec::new();
+    for el in data.get("elements").and_then(|e| e.as_array()).into_iter().flatten() {
+        let Some(id) = el.get("id").and_then(|v| v.as_str()) else { continue };
+        let name = el.get("name").and_then(|v| v.as_str()).unwrap_or(id).to_string();
+        let Some(file_url) = el.get("url").and_then(|u| u.get("url")).and_then(|u| u.as_str()) else { continue };
+        let ext = el
+            .get("fileExtension")
+            .and_then(|v| v.as_str())
+            .filter(|e| !e.is_empty())
+            .map(String::from)
+            .or_else(|| {
+                // Fall back to the `extension` attribute in the CML
+                let re = regex::Regex::new(&format!(r#"<asset\b[^>]*\bid="{}"[^>]*\bextension="([^"]+)""#, regex::escape(id))).ok()?;
+                re.captures(cml).map(|c| c[1].to_string())
+            })
+            .unwrap_or_else(|| "bin".to_string());
+        out.push(ReadingAsset { id: id.to_string(), url: file_url.to_string(), ext: sanitize_name(&ext), name });
+    }
+    out
+}
+
+/// Download tasks saving reading assets to `<course>/_assets/<id>.<ext>`.
+async fn reading_asset_tasks(client: &reqwest::Client, cml: &str, root_folder: &str) -> Vec<DownloadTask> {
+    resolve_reading_assets(client, cml)
+        .await
+        .into_iter()
+        .map(|a| DownloadTask {
+            id: format!("asset-{}", a.id),
+            title: format!("{} (Reading attachment)", a.name),
+            url: a.url,
+            relative_path: format!("{}/_assets/{}.{}", root_folder, a.id, a.ext),
+            total_bytes: 0,
+            downloaded_bytes: 0,
+            status: TaskStatus::Pending,
+            error: None,
+        })
+        .collect()
 }
 
 pub async fn check_existing_files(manifest: &mut CourseManifest, base_dir: &Path) {
@@ -490,7 +523,7 @@ pub async fn check_existing_files(manifest: &mut CourseManifest, base_dir: &Path
             if let Ok(meta) = fs::metadata(&target).await {
                 let len = meta.len();
                 if len > 0 {
-                    if task.relative_path.ends_with(".html") || task.relative_path.ends_with(".srt") {
+                    if !task.relative_path.ends_with(".mp4") {
                         task.status = TaskStatus::Completed;
                         task.downloaded_bytes = len;
                         task.total_bytes = len;
@@ -1345,3 +1378,24 @@ pub async fn get_all_downloaded_items(base_dir: &Path, _client: Option<&Coursera
 
 
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picks_best_resolution_under_cap() {
+        let v: serde_json::Value = serde_json::json!({
+            "360p": {"mp4VideoUrl": "u360"},
+            "540p": {"mp4VideoUrl": "u540"},
+            "720p": {"mp4VideoUrl": "u720"},
+            "1080p": {"webMVideoUrl": "only-webm"}
+        });
+        let m = v.as_object().unwrap();
+        assert_eq!(pick_mp4_source(m, Some(720)).unwrap().1, "u720");
+        assert_eq!(pick_mp4_source(m, Some(1080)).unwrap().1, "u720");
+        assert_eq!(pick_mp4_source(m, Some(540)).unwrap().1, "u540");
+        assert_eq!(pick_mp4_source(m, Some(240)).unwrap().1, "u360");
+        assert_eq!(pick_mp4_source(m, None).unwrap().0, "720p");
+    }
+}

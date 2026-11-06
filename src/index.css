@@ -305,3 +305,92 @@
 
 
 
+
+/* ── Course player: readings (CML) ──────────────────────── */
+.cml-reading {
+  font-size: 17px;
+  line-height: 1.75;
+  color: var(--foreground);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.cml-reading > * + * { margin-top: 1rem; }
+.cml-reading h2 { font-size: 1.5rem; font-weight: 600; line-height: 1.3; margin-top: 2rem; }
+.cml-reading h3 { font-size: 1.25rem; font-weight: 600; line-height: 1.35; margin-top: 1.75rem; }
+.cml-reading h4, .cml-reading h5, .cml-reading h6 { font-size: 1.075rem; font-weight: 600; margin-top: 1.5rem; }
+.cml-reading a { color: var(--primary); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.cml-reading ul { list-style: disc; padding-left: 1.6rem; }
+.cml-reading ol { list-style: decimal; padding-left: 1.6rem; }
+.cml-reading li + li { margin-top: 0.35rem; }
+.cml-reading li > p { margin: 0; }
+.cml-reading strong { font-weight: 700; }
+.cml-reading code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--secondary);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+.cml-reading pre {
+  background: #1F1F1F;
+  color: #F2F4F8;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  overflow-x: auto;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.cml-reading pre code { background: none; padding: 0; font-size: inherit; color: inherit; }
+.cml-reading figure img { max-width: 100%; height: auto; border-radius: 6px; border: 1px solid var(--border); }
+.cml-reading .cml-table { overflow-x: auto; }
+.cml-reading table { border-collapse: collapse; width: 100%; font-size: 15px; }
+.cml-reading td, .cml-reading th { border: 1px solid var(--border); padding: 0.5rem 0.75rem; vertical-align: top; }
+.cml-reading th { background: var(--secondary); font-weight: 600; }
+.cml-reading .cml-asset {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  background: var(--card);
+  transition: background 0.15s;
+}
+.cml-reading .cml-asset:hover { background: var(--accent); }
+.cml-reading .cml-asset-icon {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--primary);
+  background: var(--accent);
+  border-radius: 4px;
+  padding: 0.25rem 0.45rem;
+  min-width: 2.75rem;
+  text-align: center;
+}
+.cml-reading .cml-asset-name { flex: 1; font-size: 15px; font-weight: 600; }
+.cml-reading .cml-asset-action { font-size: 13px; color: var(--primary); font-weight: 600; }
+.cml-reading .cml-missing { cursor: default; opacity: 0.6; }
+.cml-reading div.cml-missing:not(.cml-asset) {
+  font-size: 13px;
+  color: var(--muted-foreground);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 1rem;
+  text-align: center;
+}
+
+/* ── Read aloud highlighting ─────────────────────────────── */
+.tts-clickable p, .tts-clickable li, .tts-clickable h2, .tts-clickable h3, .tts-clickable h4 { cursor: pointer; }
+.tts-active-block {
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+  border-radius: 6px;
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--primary) 7%, transparent);
+  transition: background 0.2s;
+}
+::highlight(tts-sentence) {
+  background-color: color-mix(in srgb, var(--primary) 28%, transparent);
+}
+
+/* ── Video seek thumb (input is transparent; keep hit area tall) ── */
+.video-seek { height: 16px; -webkit-appearance: none; appearance: none; background: transparent; }

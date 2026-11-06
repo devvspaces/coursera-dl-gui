@@ -22,6 +22,7 @@ import {
   Play,
   Clock,
   GraduationCap,
+  MonitorPlay,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
@@ -47,6 +48,7 @@ export function DownloadsView() {
   const setOutputDirectory = useAppStore((s) => s.setOutputDirectory);
   const resetDownloads = useAppStore((s) => s.resetDownloads);
   const maxResolution = useAppStore((s) => s.maxResolution);
+  const openCoursePlayer = useAppStore((s) => s.openCoursePlayer);
 
   const [activeTab, setActiveTab] = useState<"library" | "queue">(
     activeManifest ? "queue" : "library"
@@ -493,9 +495,16 @@ export function DownloadsView() {
                           {isExpanded && (
                             <div className="mt-2 space-y-1 pl-2 border-l-2 border-primary/30 max-h-32 overflow-y-auto custom-scrollbar">
                               {item.sub_courses.map((sub, sIdx) => (
-                                <p key={sIdx} className="text-[11px] font-mono text-muted-foreground truncate">
-                                  {sub}
-                                </p>
+                                <button
+                                  key={sIdx}
+                                  type="button"
+                                  onClick={() => openCoursePlayer({ path: `${item.path}/${sub}`, title: sub })}
+                                  className="w-full flex items-center gap-1.5 text-left text-[11px] font-mono text-muted-foreground hover:text-primary truncate cursor-pointer"
+                                  title="Open course"
+                                >
+                                  <MonitorPlay className="h-3 w-3 shrink-0" />
+                                  <span className="truncate">{sub}</span>
+                                </button>
                               ))}
                             </div>
                           )}
@@ -510,6 +519,28 @@ export function DownloadsView() {
                         </span>
 
                         <div className="flex items-center gap-1.5 shrink-0">
+                          {!isSpec && (
+                            <Button
+                              size="sm"
+                              onClick={() => openCoursePlayer({ path: item.path, slug: item.slug, title: item.title })}
+                              className="h-8 px-2.5 gap-1.5 text-xs font-semibold rounded-[4px] bg-[#0056D2] hover:bg-[#00419e] text-white cursor-pointer shadow-xs"
+                              title="Watch and read this course inside the app"
+                            >
+                              <MonitorPlay className="h-3.5 w-3.5" />
+                              Open Course
+                            </Button>
+                          )}
+                          {isSpec && item.sub_courses.length > 0 && (
+                            <Button
+                              size="sm"
+                              onClick={() => toggleExpandSpec(item.id)}
+                              className="h-8 px-2.5 gap-1.5 text-xs font-semibold rounded-[4px] bg-[#0056D2] hover:bg-[#00419e] text-white cursor-pointer shadow-xs"
+                              title="Choose a course to open"
+                            >
+                              <MonitorPlay className="h-3.5 w-3.5" />
+                              Open…
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="outline"
@@ -518,20 +549,20 @@ export function DownloadsView() {
                             title="Open in Finder / Explorer"
                           >
                             <FolderOpen className="h-3.5 w-3.5 text-[#0056D2] dark:text-[#2E7BFA]" />
-                            Open Folder
                           </Button>
 
                           <Button
                             size="sm"
                             onClick={() => handleResumeOrInspect(item)}
                             disabled={preparingSlug === item.slug}
-                            className="h-8 px-2.5 gap-1.5 text-xs font-semibold rounded-[4px] bg-[#0056D2] hover:bg-[#00419e] text-white cursor-pointer shadow-xs"
+                            variant="outline"
+                            className="h-8 px-2.5 gap-1.5 text-xs font-semibold rounded-[4px] border-[#D9D9D9] dark:border-white/15 text-[#1F1F1F] dark:text-white hover:bg-[#F5F7FA] dark:hover:bg-white/5 cursor-pointer"
                             title="Inspect or resume remaining files"
                           >
                             {preparingSlug === item.slug ? (
                               <Loader2 className="h-3.5 w-3.5 animate-spin" />
                             ) : (
-                              <Play className="h-3 w-3 fill-current" />
+                              <Play className="h-3 w-3 fill-current text-[#0056D2] dark:text-[#2E7BFA]" />
                             )}
                             {isCompleted ? "Re-Inspect" : "Resume"}
                           </Button>
